@@ -108,3 +108,41 @@ func (t *atomicLimiter) Take() time.Time {
 	t.clock.Sleep(interval)
 	return newState.last
 }
+
+func (t *atomicLimiter) TakeNonBlocking() bool {
+	now := t.clock.Now()
+
+	previousStatePointer := atomic.LoadPointer(&t.state)
+	oldState := (*state)(previousStatePointer)
+
+	if now.Sub(oldState.last) < 0 {
+		return false
+	}
+
+	newState := state{
+		last:     now,
+		sleepFor: oldState.sleepFor,
+	}
+
+	// If this is our first request, then we allow it.
+	if oldState.last.IsZero() {
+		return atomic.CompareAndSwapPointer(&t.state, previousStatePointer, unsafe.Pointer(&newState))
+	}
+
+	// sleepFor calculates how much time we should sleep based on
+	// the perRequest budget and how long the last request took.
+	// Since the request may take longer than the budget, this number
+	// can get negative, and is summed across requests.
+	newState.sleepFor += t.perRequest - now.Sub(oldState.last)
+	// We shouldn't allow sleepFor to get too negative, since it would mean that
+	// a service that slowed down a lot for a short period of time would get
+	// a much higher RPS following that.
+	if newState.sleepFor < t.maxSlack {
+		newState.sleepFor = t.maxSlack
+	}
+	if newState.sleepFor > 0 {
+		newState.last = newState.last.Add(newState.sleepFor)
+		newState.sleepFor = 0
+	}
+	return atomic.CompareAndSwapPointer(&t.state, previousStatePointer, unsafe.Pointer(&newState))
+}
