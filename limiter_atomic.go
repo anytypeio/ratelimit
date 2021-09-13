@@ -125,6 +125,8 @@ func (t *atomicLimiter) TakeNonBlocking() bool {
 		}
 		// If this is our first request, then we allow it.
 		if oldState.last.IsZero() {
+			// setting sleepFor as though the service didn't receive any requests for a long time
+			newState.sleepFor = t.maxSlack
 			taken = atomic.CompareAndSwapPointer(&t.state, previousStatePointer, unsafe.Pointer(&newState))
 			continue
 		}
